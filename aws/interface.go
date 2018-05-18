@@ -146,9 +146,9 @@ func (c *interfaceClient) NewInterface(secGrps []string, requiredTags map[string
 		return nil, err
 	}
 
-	if len(subnets) <= len(existingInterfaces) {
-		return nil, fmt.Errorf("not enough available subnets to make a new interface")
-	}
+//	if len(subnets) <= len(existingInterfaces) {
+//		return nil, fmt.Errorf("not enough available subnets to make a new interface")
+//	}
 
 	limits := c.aws.ENILimits()
 	if len(existingInterfaces) >= limits.Adapters {
@@ -168,15 +168,16 @@ OUTER:
 				continue OUTER
 			}
 		}
-		var matched bool
-		for _, intf := range existingInterfaces {
-			if intf.SubnetID == newSubnet.ID {
-				matched = true
-			}
-		}
-		if !matched {
-			availableSubnets = append(availableSubnets, newSubnet)
-		}
+		availableSubnets = append(availableSubnets, newSubnet)
+//		var matched bool
+//		for _, intf := range existingInterfaces {
+//			if intf.SubnetID == newSubnet.ID {
+//				matched = true
+//			}
+//		}
+//		if !matched {
+//			availableSubnets = append(availableSubnets, newSubnet)
+//		}
 	}
 
 	// assign new interfaces to subnets with most available addresses
