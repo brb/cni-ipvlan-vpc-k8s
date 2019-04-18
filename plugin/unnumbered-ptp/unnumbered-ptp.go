@@ -309,17 +309,6 @@ func setupNodePortRule(ifName string, nodePorts string, nodePortMark int) error 
 }
 
 func setupContainerVeth(netns ns.NetNS, ifName string, mtu int, hostAddrs []netlink.Addr, pr *current.Result) (*current.Interface, *current.Interface, error) {
-	// The IPAM result will be something like IP=192.168.3.5/24, GW=192.168.3.1.
-	// What we want is really a point-to-point link but veth does not support IFF_POINTTOPOINT.
-	// Next best thing would be to let it ARP but set interface to 192.168.3.5/32 and
-	// add a route like "192.168.3.0/24 via 192.168.3.1 dev $ifName".
-	// Unfortunately that won't work as the GW will be outside the interface's subnet.
-
-	// Our solution is to configure the interface with 192.168.3.5/24, then delete the
-	// "192.168.3.0/24 dev $ifName" route that was automatically added. Then we add
-	// "192.168.3.1/32 dev $ifName" and "192.168.3.0/24 via 192.168.3.1 dev $ifName".
-	// In other words we force all traffic to ARP via the gateway except for GW itself.
-
 	hostInterface := &current.Interface{}
 	containerInterface := &current.Interface{}
 
@@ -419,7 +408,6 @@ func setupHostVeth(vethName string, hostAddrs []netlink.Addr, masq bool, tableSt
 	if len(result.IPs) == 0 {
 		return nil
 	}
-	fmt.Fprintf(os.Stderr, "Current result: %v\n", result)
 
 	// lookup by name as interface ids might have changed
 	veth, err := net.InterfaceByName(vethName)
@@ -489,8 +477,6 @@ func cmdAdd(args *skel.CmdArgs) error {
 	if conf.PrevResult == nil {
 		return fmt.Errorf("must be called as chained plugin")
 	}
-
-	fmt.Fprintf(os.Stderr, "Initial result: %v", conf.PrevResult)
 
 	// This is some sample code to generate the list of container-side IPs.
 	// We're casting the prevResult to a 0.3.0 response, which can also include
@@ -604,20 +590,17 @@ func cmdDel(args *skel.CmdArgs) error {
 	_ = ns.WithNetNSPath(args.Netns, func(_ ns.NetNS) error {
 		var err error
 
-		// lookup pod IPs from the args.IfName device (usually eth0)
-		if conf.IPMasq {
-			iface, err := netlink.LinkByName(args.IfName)
-			if err != nil {
-				if err.Error() == "Link not found" {
-					return ip.ErrLinkNotFound
-				}
-				return fmt.Errorf("failed to lookup %q: %v", args.IfName, err)
+		iface, err := netlink.LinkByName(args.IfName)
+		if err != nil {
+			if err.Error() == "Link not found" {
+				return ip.ErrLinkNotFound
 			}
+			return fmt.Errorf("failed to lookup %q: %v", args.IfName, err)
+		}
 
-			ipnets, err = netlink.AddrList(iface, netlink.FAMILY_ALL)
-			if err != nil || len(ipnets) == 0 {
-				return fmt.Errorf("failed to get IP addresses for %q: %v", args.IfName, err)
-			}
+		ipnets, err = netlink.AddrList(iface, netlink.FAMILY_ALL)
+		if err != nil || len(ipnets) == 0 {
+			return fmt.Errorf("failed to get IP addresses for %q: %v", args.IfName, err)
 		}
 
 		vethIface, err := netlink.LinkByName(args.IfName)
@@ -639,19 +622,34 @@ func cmdDel(args *skel.CmdArgs) error {
 
 			_ = util.TeardownIPMasq(&net.IPNet{IP: ipn.IP, Mask: net.CIDRMask(addrBits, addrBits)}, conf.HostInterface, chain, comment)
 		}
+	}
 
-		if vethPeerIndex != -1 {
-			link, err := netlink.LinkByIndex(vethPeerIndex)
-			if err != nil {
-				return nil
-			}
-
-			rule := netlink.NewRule()
-			rule.IifName = link.Attrs().Name
-			// ignore errors as we might be called multiple times
-			_ = netlink.RuleDel(rule)
-			_ = netlink.LinkDel(link)
+	if vethPeerIndex != -1 {
+		link, err := netlink.LinkByIndex(vethPeerIndex)
+		if err != nil {
+			return nil
 		}
+
+		rule := netlink.NewRule()
+		rule.IifName = link.Attrs().Name
+		// ignore errors as we might be called multiple times
+		_ = netlink.RuleDel(rule)
+		_ = netlink.LinkDel(link)
+	}
+
+	for _, ipn := range ipnets {
+		addrBits := 128
+		if ipn.IP.To4() != nil {
+			addrBits = 32
+		}
+
+		rule := netlink.NewRule()
+		rule.Dst = &net.IPNet{
+			IP:   ipn.IP,
+			Mask: net.CIDRMask(addrBits, addrBits),
+		}
+		// ignore errors as we might be called multiple times
+		_ = netlink.RuleDel(rule)
 	}
 
 	return nil

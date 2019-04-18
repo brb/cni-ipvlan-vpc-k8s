@@ -89,7 +89,7 @@ func TeardownIPMasq(ipn *net.IPNet, oif string, chain string, comment string) er
 		return fmt.Errorf("failed to locate iptables: %v", err)
 	}
 
-	err = ipt.Delete("nat", "POSTROUTING", "-s", ipn.String(), "-j", chain, "-m", "comment", "--comment", comment)
+	err = ipt.Delete("nat", "POSTROUTING", "-s", ipn.String(), "-o", oif, "-j", chain, "-m", "comment", "--comment", comment)
 	if err != nil && !isNotExist(err) {
 		return err
 	}
