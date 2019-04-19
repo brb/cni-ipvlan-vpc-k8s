@@ -153,19 +153,6 @@ func enableForwarding(ipv4 bool, ipv6 bool) error {
 	return nil
 }
 
-func setupSNAT(ifName string, comment string) error {
-	ipt, err := iptables.NewWithProtocol(iptables.ProtocolIPv4)
-	if err != nil {
-		return fmt.Errorf("failed to locate iptables: %v", err)
-	}
-	rulespec := []string{"-o", ifName, "-j", "MASQUERADE"}
-	if ipt.HasRandomFully() {
-		rulespec = append(rulespec, "--random-fully")
-	}
-	rulespec = append(rulespec, "-m", "comment", "--comment", comment)
-	return ipt.AppendUnique("nat", "POSTROUTING", rulespec...)
-}
-
 func findFreeTable(start int) (int, error) {
 	allocatedTableIDs := make(map[int]bool)
 	// combine V4 and V6 tables
@@ -187,7 +174,7 @@ func findFreeTable(start int) (int, error) {
 	return -1, fmt.Errorf("failed to find free route table")
 }
 
-func addPodRouteTable(veth *net.Interface, eni *net.Interface, route *types.Route, tableStart int) error {
+func addPodRouteTable(IPs []*current.IPConfig, eni *net.Interface, route *types.Route, tableStart int) error {
 	table := -1
 
 	// try 10 times to write to an empty table slot
@@ -243,15 +230,25 @@ func addPodRouteTable(veth *net.Interface, eni *net.Interface, route *types.Rout
 		return fmt.Errorf("failed to add routes to a free table")
 	}
 
-	// add policy route for traffic originating from a Pod
-	rule := netlink.NewRule()
-	rule.IifName = veth.Name
-	rule.Table = table
-	rule.Priority = podRulePriority
+	for _, ipc := range IPs {
+		addrBits := 128
+		if ipc.Address.IP.To4() != nil {
+			addrBits = 32
+		}
 
-	err := netlink.RuleAdd(rule)
-	if err != nil {
-		return fmt.Errorf("failed to add policy rule %v: %v", rule, err)
+		// add policy rule for traffic from pods
+		rule := netlink.NewRule()
+		rule.Src = &net.IPNet{
+			IP:   ipc.Address.IP,
+			Mask: net.CIDRMask(addrBits, addrBits),
+		}
+		rule.Table = table
+		rule.Priority = podRulePriority
+
+		err := netlink.RuleAdd(rule)
+		if err != nil {
+			return fmt.Errorf("failed to add policy rule %v: %v", rule, err)
+		}
 	}
 
 	return nil
@@ -452,7 +449,7 @@ func setupHostVeth(vethName string, hostAddrs []netlink.Addr, masq bool, tableSt
 		return fmt.Errorf("failed to lookup %q: %v", eniName, err)
 	}
 	// add route table for traffic from pod and policy rule
-	err = addPodRouteTable(veth, eni, result.Routes[0], tableStart)
+	err = addPodRouteTable(result.IPs, eni, result.Routes[0], tableStart)
 	if err != nil {
 		return fmt.Errorf("failed to add policy rules: %v", err)
 	}
@@ -624,32 +621,50 @@ func cmdDel(args *skel.CmdArgs) error {
 		}
 	}
 
+	for _, ipn := range ipnets {
+		family := netlink.FAMILY_V6
+		if ipn.IP.To4() != nil {
+			family = netlink.FAMILY_V4
+		}
+		rules, err := netlink.RuleList(family)
+		if err != nil {
+			return fmt.Errorf("failed to list rules: %v", err)
+		}
+
+		for _, r := range rules {
+			// Delete policy rules for traffic to pods
+			if r.Dst != nil && r.Dst.IP.Equal(ipn.IP) {
+				if err := netlink.RuleDel(&r); err != nil {
+					return fmt.Errorf("failed to delete rule: %v, %v", r, err)
+				}
+			}
+			// Delete policy rules for traffic from pods and clear pod route table
+			if r.Src != nil && r.Src.IP.Equal(ipn.IP) {
+				routes, err := netlink.RouteListFiltered(family, &netlink.Route{
+					Table: r.Table,
+				}, netlink.RT_FILTER_TABLE)
+				if err != nil {
+					return fmt.Errorf("failed list routes for table: %v, %v", r.Table, err)
+				}
+				for _, rt := range routes {
+					if err := netlink.RouteDel(&rt); err != nil {
+						return fmt.Errorf("failed to delete route: %v, %v", rt, err)
+					}
+				}
+				if err := netlink.RuleDel(&r); err != nil {
+					return fmt.Errorf("failed to delete rule: %v, %v", r, err)
+				}
+			}
+		}
+	}
+
 	if vethPeerIndex != -1 {
 		link, err := netlink.LinkByIndex(vethPeerIndex)
 		if err != nil {
 			return nil
 		}
 
-		rule := netlink.NewRule()
-		rule.IifName = link.Attrs().Name
-		// ignore errors as we might be called multiple times
-		_ = netlink.RuleDel(rule)
 		_ = netlink.LinkDel(link)
-	}
-
-	for _, ipn := range ipnets {
-		addrBits := 128
-		if ipn.IP.To4() != nil {
-			addrBits = 32
-		}
-
-		rule := netlink.NewRule()
-		rule.Dst = &net.IPNet{
-			IP:   ipn.IP,
-			Mask: net.CIDRMask(addrBits, addrBits),
-		}
-		// ignore errors as we might be called multiple times
-		_ = netlink.RuleDel(rule)
 	}
 
 	return nil
