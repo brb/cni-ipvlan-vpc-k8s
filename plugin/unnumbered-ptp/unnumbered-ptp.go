@@ -40,6 +40,8 @@ import (
 	"github.com/lyft/cni-ipvlan-vpc-k8s/nl"
 	"github.com/lyft/cni-ipvlan-vpc-k8s/util"
 	"github.com/vishvananda/netlink"
+
+	"golang.org/x/sys/unix"
 )
 
 // constants for full jitter backoff in milliseconds, and for nodeport marks
@@ -109,16 +111,37 @@ func parseConfig(stdin []byte) (*PluginConf, error) {
 	// End previous result parsing
 
 	if conf.HostInterface == "" {
-		return nil, fmt.Errorf("hostInterface must be specified")
+		// Default to the interface associated with the default ipv4 gateway
+		routes, err := netlink.RouteListFiltered(netlink.FAMILY_V4, &netlink.Route{
+			Table: unix.RT_TABLE_MAIN,
+		}, netlink.RT_FILTER_DST|netlink.RT_FILTER_TABLE)
+		if err != nil || len(routes) == 0 {
+			return nil, fmt.Errorf("hostInterface not set and unable to get default route")
+		}
+
+		link, err := netlink.LinkByIndex(routes[0].LinkIndex)
+		if err != nil {
+			return nil, fmt.Errorf("hostInterface not set and unable to get link for index %v", routes[0].LinkIndex)
+		}
+		conf.HostInterface = link.Attrs().Name
 	}
 
-	// If the MTU is not set, use the one of the hostInterface
+	// If the MTU is not set, use the one of the IPAM provided interface
+	// If there is none, use the hostInterface
 	if conf.MTU == 0 {
-		baseMtu, err := nl.GetMtu(conf.HostInterface)
-		if err != nil {
-			return nil, fmt.Errorf("unable to get MTU for hostInterface")
+		if conf.PrevResult != nil && len(conf.PrevResult.Interfaces) > 0 {
+			baseMtu, err := nl.GetMtu(conf.PrevResult.Interfaces[0].Name)
+			if err != nil {
+				return nil, fmt.Errorf("unable to get MTU for IPAM provided interface: %v", conf.PrevResult.Interfaces[0].Name)
+			}
+			conf.MTU = baseMtu
+		} else {
+			baseMtu, err := nl.GetMtu(conf.HostInterface)
+			if err != nil {
+				return nil, fmt.Errorf("unable to get MTU for hostInterface: %v", conf.HostInterface)
+			}
+			conf.MTU = baseMtu
 		}
-		conf.MTU = baseMtu
 	}
 
 	if conf.NodePorts == "" {
@@ -280,7 +303,7 @@ func setupNodePortRule(ifName string, nodePorts string, nodePortMark int) error 
 	// add policy route for traffic from marked as nodeport
 	rule := netlink.NewRule()
 	rule.Mark = nodePortMark
-	rule.Table = 254 // main table
+	rule.Table = unix.RT_TABLE_MAIN // main table
 	rule.Priority = mainTableRulePriority
 
 	exists := false
@@ -437,7 +460,7 @@ func setupHostVeth(vethName string, hostAddrs []netlink.Addr, masq bool, tableSt
 			IP:   ipc.Address.IP,
 			Mask: net.CIDRMask(addrBits, addrBits),
 		}
-		rule.Table = 254 // main table
+		rule.Table = unix.RT_TABLE_MAIN
 		rule.Priority = mainTableRulePriority
 		if err := netlink.RuleAdd(rule); err != nil {
 			return fmt.Errorf("failed to add policy rule %v: %v", rule, err)
