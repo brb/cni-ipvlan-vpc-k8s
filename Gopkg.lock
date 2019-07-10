@@ -187,15 +187,15 @@
   version = "v1.20.0"
 
 [[projects]]
-  digest = "1:dc7dae4a4ee322cb9852ba4cec6a0a61815cc2870d79b0c25edfb75e3bd618ec"
+  digest = "1:a246aa7b97df08813a0434b807b641dc519f614a1c5bf0bfdd3abb67d084b678"
   name = "github.com/vishvananda/netlink"
   packages = [
     ".",
     "nl",
   ]
   pruneopts = ""
-  revision = "a2ad57a690f3caf3015351d2d6e1c0b95c349752"
-  version = "v1.0.0"
+  revision = "dump-seq-nr"
+  source = "github.com/brb/netlink"
 
 [[projects]]
   branch = "master"
@@ -246,6 +246,7 @@
     "github.com/containernetworking/plugins/pkg/ipam",
     "github.com/containernetworking/plugins/pkg/ns",
     "github.com/containernetworking/plugins/pkg/utils",
+    "github.com/containernetworking/plugins/pkg/utils/sysctl",
     "github.com/coreos/go-iptables/iptables",
     "github.com/docker/docker/api/types",
     "github.com/docker/docker/client",
@@ -255,6 +256,7 @@
     "github.com/urfave/cli",
     "github.com/vishvananda/netlink",
     "golang.org/x/net/context",
+    "golang.org/x/sys/unix",
   ]
   solver-name = "gps-cdcl"
   solver-version = 1

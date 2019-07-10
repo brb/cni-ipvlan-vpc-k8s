@@ -18,3 +18,8 @@
 [[constraint]]
   name = "github.com/urfave/cli"
   version = "~1.20.0"
+
+[[constraint]]
+  name = "github.com/vishvananda/netlink"
+  revision = "dump-seq-nr"
+  source = "github.com/brb/netlink"
